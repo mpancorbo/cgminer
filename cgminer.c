@@ -318,7 +318,8 @@ static bool should_run(void)
 		return true;
 
 	gettimeofday(&tv, NULL);
-	tm = localtime(&tv.tv_sec);
+	const time_t tmp_time = tv.tv_sec;
+	tm = localtime(&tmp_time);
 	if (schedstart.enable) {
 		if (!schedstop.enable) {
 			if (time_before(tm, &schedstart.tm))
@@ -350,7 +351,8 @@ void get_datestamp(char *f, struct timeval *tv)
 {
 	struct tm *tm;
 
-	tm = localtime(&tv->tv_sec);
+	const time_t tmp_time = tv->tv_sec;
+	tm = localtime(&tmp_time);
 	sprintf(f, "[%d-%02d-%02d %02d:%02d:%02d]",
 		tm->tm_year + 1900,
 		tm->tm_mon + 1,
@@ -364,7 +366,8 @@ void get_timestamp(char *f, struct timeval *tv)
 {
 	struct tm *tm;
 
-	tm = localtime(&tv->tv_sec);
+	const time_t tmp_time = tv->tv_sec;
+	tm = localtime(&tmp_time);
 	sprintf(f, "[%02d:%02d:%02d]",
 		tm->tm_hour,
 		tm->tm_min,
@@ -2584,9 +2587,11 @@ static bool submit_upstream_work(struct work *work, CURL *curl, bool resubmit)
 			double submit_time = tdiff(&tv_submit_reply, &tv_submit);
 			int diffplaces = 3;
 
-			tm = localtime(&(work->tv_getwork.tv_sec));
+			time_t tmp_time = work->tv_getwork.tv_sec;
+			tm = localtime(&tmp_time);
 			memcpy(&tm_getwork, tm, sizeof(struct tm));
-			tm = localtime(&(tv_submit_reply.tv_sec));
+			tmp_time = tv_submit_reply.tv_sec;
+			tm = localtime(&tmp_time);
 			memcpy(&tm_submit_reply, tm, sizeof(struct tm));
 
 			if (work->clone) {
@@ -2957,7 +2962,7 @@ void app_restart(void)
 	}
 #endif
 
-	execv(initial_args[0], initial_args);
+	execv(initial_args[0], (EXECV_2ND_ARG_TYPE)initial_args);
 	applog(LOG_WARNING, "Failed to restart application");
 }
 
@@ -3321,7 +3326,7 @@ static void *submit_work_thread(void *userdata)
 			pool->rpc_user, work->job_id, work->nonce2, work->ntime, noncehex, sshare->id);
 		free(noncehex);
 
-		applog(LOG_INFO, "Submitting share %08lx to pool %d", hash32[6], pool->pool_no);
+		applog(LOG_INFO, "Submitting share %08lx to pool %d", htole32(hash32[6]), pool->pool_no);
 
 		/* Try resubmitting for up to 2 minutes if we fail to submit
 		 * once and the stratum pool nonce1 still matches suggesting
@@ -4686,14 +4691,10 @@ static void hashmeter(int thr_id, struct timeval *diff,
 
 	total_mhashes_done += local_mhashes;
 	local_mhashes_done += local_mhashes;
-	/* Only update the total every second */
-	if (!total_diff.tv_sec)
+	/* Only update with opt_log_interval */
+	if (total_diff.tv_sec < opt_log_interval)
 		goto out_unlock;
-	if (total_diff.tv_sec < opt_log_interval) {
-		if (thr_id < 0)
-			goto out_unlock;
-	} else
-		showlog = true;
+	showlog = true;
 	gettimeofday(&total_tv_end, NULL);
 
 	local_secs = (double)total_diff.tv_sec + ((double)total_diff.tv_usec / 1000000.0);
@@ -4742,7 +4743,7 @@ static void stratum_share_result(json_t *val, json_t *res_val, json_t *err_val,
 	hash32 = (uint32_t *)(work->hash);
 	intdiff = floor(work->work_difficulty);
 	suffix_string(sharediff, diffdisp, 0);
-	sprintf(hashshow, "%08lx Diff %s/%d%s", (unsigned long)(hash32[6]), diffdisp, intdiff,
+	sprintf(hashshow, "%08lx Diff %s/%d%s", (unsigned long)htole32(hash32[6]), diffdisp, intdiff,
 		work->block? " BLOCK!" : "");
 	share_result(val, res_val, err_val, work, hashshow, false, "");
 }
@@ -5859,7 +5860,6 @@ static void flush_queue(struct cgpu_info *cgpu)
  * directly. */
 void hash_queued_work(struct thr_info *mythr)
 {
-	const long cycle = opt_log_interval / 5 ? : 1;
 	struct timeval tv_start = {0, 0}, tv_end;
 	struct cgpu_info *cgpu = mythr->cgpu;
 	struct device_drv *drv = cgpu->drv;
@@ -5886,7 +5886,8 @@ void hash_queued_work(struct thr_info *mythr)
 		hashes_done += hashes;
 		gettimeofday(&tv_end, NULL);
 		timersub(&tv_end, &tv_start, &diff);
-		if (diff.tv_sec >= cycle) {
+		/* Update the hashmeter at most 5 times per second */
+		if (diff.tv_sec > 0 || diff.tv_usec > 200) {
 			hashmeter(thr_id, &diff, hashes_done);
 			hashes_done = 0;
 			memcpy(&tv_start, &tv_end, sizeof(struct timeval));
